@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generated Content</title>
+    <style>
+        .error {
+            color: red;
+            margin: 10px 0;
+        }
+        .image-container {
+            margin: 20px 0;
+        }
+        .video-container {
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>{{ product_name }}</h1>
+    
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+    
+    {% if video_path %}
+        <h2>Generated Video:</h2>
+        <div class="video-container">
+            <video width="640" height="360" controls>
+                <source src="{{ url_for('static', filename='generated_video.mp4') }}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+        </div>
+    {% endif %}
+    
+    <h2>Generated Script:</h2>
+    <pre>{{ script }}</pre>
+    
+    <h2>Source Images:</h2>
+    {% if images %}
+        {% for image in images %}
+            <div class="image-container">
+                <img src="{{ image }}" width="300"><br>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>No images found</p>
+    {% endif %}
+    
+    <a href="/">Back to Home</a>
+
+    <script async src="https://cse.google.com/cse.js?cx=52035b634ebc94711">
+    </script>
+    <div class="gcse-search"></div>
+</body>
+</html>

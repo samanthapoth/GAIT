@@ -1,0 +1,7 @@
+moviepy
+numpy
+Flask
+Pillow
+python-dotenv
+openai
+requests

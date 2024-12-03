@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GAIT - Content Generation System</title>
+    <style>
+        .error { color: red; }
+        .form-group { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>GAIT Content Generator</h1>
+    
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+    
+    <form method="POST" action="/">
+        <div class="form-group">
+            <label>Amazon Product Link:</label><br>
+            <input type="text" name="amazon_link" size="100" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Video Length (seconds):</label><br>
+            <input type="number" name="video_length" value="30" min="15" max="60">
+        </div>
+        
+        <div class="form-group">
+            <label>Platform:</label><br>
+            <select name="platform">
+                <option value="youtube">YouTube</option>
+                <option value="twitter">Twitter</option>
+            </select>
+        </div>
+        
+        <input type="submit" value="Generate Content">
+    </form>
+</body>
+</html>
