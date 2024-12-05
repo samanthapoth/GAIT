@@ -22,18 +22,31 @@
         <div class="error">{{ error }}</div>
     {% endif %}
     
-    {% if video_path %}
-        <h2>Generated Video:</h2>
-        <div class="video-container">
-            <video width="640" height="360" controls>
-                <source src="{{ url_for('static', filename='generated_video.mp4') }}" type="video/mp4">
-                Your browser does not support the video tag.
-            </video>
-        </div>
+    {% if main_video %}
+        <h2>Main Video</h2>
+        <video width="640" height="360" controls>
+            <source src="{{ url_for('static', filename=main_video) }}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
     {% endif %}
     
-    <h2>Generated Script:</h2>
-    <pre>{{ script }}</pre>
+    {% if avatar_video %}
+        <h2>Avatar Video</h2>
+        <video width="320" height="240" controls>
+            <source src="{{ url_for('static', filename=avatar_video) }}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+    {% endif %}
+    
+    <div class="script-section">
+        <h3>Script:</h3>
+        <pre>{{ script }}</pre>
+    </div>
+    
+    <div class="visuals-section">
+        <h3>Visual Directions:</h3>
+        <pre>{{ visuals }}</pre>
+    </div>
     
     <h2>Source Images:</h2>
     {% if images %}

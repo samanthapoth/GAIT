@@ -14,7 +14,7 @@
         <div class="error">{{ error }}</div>
     {% endif %}
     
-    <form method="POST" action="/">
+    <form method="POST" enctype="multipart/form-data">
         <div class="form-group">
             <label>Amazon Product Link:</label><br>
             <input type="text" name="amazon_link" size="100" required>
@@ -33,7 +33,13 @@
             </select>
         </div>
         
-        <input type="submit" value="Generate Content">
+        <div class="form-group">
+            <label for="presenter_image">Add Presenter Image (Optional):</label>
+            <input type="file" name="presenter_image" accept="image/*">
+            <small>Upload a clear front-facing photo to create an AI presenter</small>
+        </div>
+        
+        <button type="submit">Generate Video</button>
     </form>
 </body>
 </html>
