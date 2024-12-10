@@ -23,19 +23,13 @@
     {% endif %}
     
     {% if main_video %}
-        <h2>Main Video</h2>
-        <video width="640" height="360" controls>
-            <source src="{{ url_for('static', filename=main_video) }}" type="video/mp4">
-            Your browser does not support the video tag.
-        </video>
-    {% endif %}
-    
-    {% if avatar_video %}
-        <h2>Avatar Video</h2>
-        <video width="320" height="240" controls>
-            <source src="{{ url_for('static', filename=avatar_video) }}" type="video/mp4">
-            Your browser does not support the video tag.
-        </video>
+        <h2>Generated Video</h2>
+        <div class="video-container">
+            <video width="640" height="360" controls>
+                <source src="{{ url_for('static', filename=main_video) }}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+        </div>
     {% endif %}
     
     <div class="script-section">
