@@ -14,9 +14,10 @@ import time
 import io
 from rembg import remove
 from moviepy.video.VideoClip import ColorClip
+import re
 
 app = Flask(__name__)
-load_dotenv()
+load_dotenv(override=True)
 
 # Initialize API clients
 openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
@@ -96,38 +97,36 @@ def fetch_images_from_google(query):
 
 def generate_script(product_name, product_description, video_length):
     """Generate video script using OpenAI"""
-    prompt = f"""Create a {video_length} second video script to advertise this product:
+    prompt = f"""Write a {video_length} second promotional video script for this product:
     Product: {product_name}
     Description: {product_description}
-    Include: 
-    1. Engaging opening hook
-    2. Key features and benefits
-    3. Call to action with affiliate link
-    Format the response EXACTLY like this:
-    SCRIPT:
-    (The speaking parts here)
-
-    VISUALS:
-    (The visual descriptions here)
-    """
+    
+    Important: Write ONLY the speaking parts. No labels, no 'SCRIPT:', no 'VISUALS:', no speaker names, no parentheses, no stage directions - just the exact words to be spoken.
+    Make it engaging and natural, like someone talking to a friend.
+    Include an opening hook, key features, and end with a call to action."""
     
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}]
     )
     
-    full_response = response.choices[0].message.content
+    script = response.choices[0].message.content.strip()
     
-    # Split the response into script and visuals
-    try:
-        script_part = full_response.split('SCRIPT:')[1].split('VISUALS:')[0].strip()
-        visuals_part = full_response.split('VISUALS:')[1].strip()
-        
-        # Store visuals in the session or pass them to the template
-        return script_part, visuals_part
-    except:
-        # Fallback if the splitting fails
-        return full_response, ""
+    # Clean up any remaining formatting
+    script = script.replace('SCRIPT:', '').replace('VISUALS:', '')
+    script = script.replace('Speaker:', '').replace('Narrator:', '')
+    
+    # Remove any text within parentheses
+    script = re.sub(r'\([^)]*\)', '', script)
+    
+    # Remove any text within brackets
+    script = re.sub(r'\[[^\]]*\]', '', script)
+    
+    # Remove any lines that look like stage directions
+    script = '\n'.join(line for line in script.split('\n') 
+                      if not line.strip().startswith(('(', '[', '*', '-')))
+    
+    return script.strip(), ""  # Return empty string for visuals
 
 def create_talking_avatar(audio_file, presenter_image, script):
     """Create a talking avatar video using D-ID API"""
@@ -188,7 +187,9 @@ def create_talking_avatar(audio_file, presenter_image, script):
             "config": {
                 "fluent": True,
                 "pad_audio": 0,
-                "result_format": "mp4"
+                "result_format": "mp4",
+                "remove_background": True,
+                "stitch": True
             },
             "source_url": image_url
         }
@@ -275,89 +276,24 @@ def process_presenter_image(presenter_image):
         return presenter_image  # Return original if processing fails
 
 def process_avatar_video(avatar_path):
-    """Remove black background from avatar video using unscreen API"""
-    try:
-        print("Starting unscreen API video processing...")
-        
-        # Unscreen API endpoint
-        UNSCREEN_API_KEY = os.getenv('UNSCREEN_API_KEY')
-        unscreen_url = "https://api.unscreen.com/v1/videos"
-        
-        # Prepare video file for upload
-        with open(avatar_path, 'rb') as video_file:
-            files = {
-                'video': ('avatar.mp4', video_file, 'video/mp4')
-            }
-            
-            headers = {
-                'X-Api-Key': UNSCREEN_API_KEY
-            }
-            
-            # Upload video for processing
-            print("Uploading video to unscreen...")
-            response = requests.post(unscreen_url, headers=headers, files=files)
-            
-            if response.status_code != 200:
-                print(f"Unscreen API error: {response.text}")
-                return avatar_path
-                
-            # Get the job ID
-            job_id = response.json()['id']
-            print(f"Unscreen job ID: {job_id}")
-            
-            # Poll for completion
-            while True:
-                status_response = requests.get(
-                    f"{unscreen_url}/{job_id}",
-                    headers=headers
-                )
-                
-                status = status_response.json()['status']
-                print(f"Processing status: {status}")
-                
-                if status == 'completed':
-                    # Get the processed video URL
-                    result_url = status_response.json()['result_url']
-                    
-                    # Download the processed video
-                    print("Downloading processed video...")
-                    processed_video = requests.get(result_url)
-                    processed_path = "frames/processed_avatar.mp4"
-                    
-                    with open(processed_path, 'wb') as f:
-                        f.write(processed_video.content)
-                        
-                    print("Processing completed successfully")
-                    return processed_path
-                    
-                elif status == 'failed':
-                    print("Unscreen processing failed")
-                    return avatar_path
-                    
-                time.sleep(2)  # Wait before checking again
-                
-    except Exception as e:
-        print(f"Error in unscreen processing: {str(e)}")
-        return avatar_path
+    """Simplified function that just returns the original video path"""
+    print("Background removal disabled - using original video")
+    return avatar_path
 
 def create_video(images, script, audio_file, presenter_image=None):
-    """Create video using MoviePy with optional talking head"""
-    avatar_path = None
-    processed_avatar_path = None
-    
     try:
         print(f"Starting video creation with presenter_image: {presenter_image}")
         
-        # Create frames directory if it doesn't exist
         os.makedirs('frames', exist_ok=True)
         os.makedirs('static', exist_ok=True)
         
+        # Process frames for main content
         frames = []
         target_size = (1920, 1080)
         
         for idx, img_url in enumerate(images):
             try:
-                # Download and save image temporarily
+                # Download and process product images
                 img_response = requests.get(img_url, timeout=10)
                 if img_response.status_code == 200:
                     temp_img_path = f"frames/frame_{idx}.jpg"
@@ -366,8 +302,6 @@ def create_video(images, script, audio_file, presenter_image=None):
                     
                     # Process image with PIL
                     img = Image.open(temp_img_path)
-                    
-                    # Convert to RGB if necessary
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     
@@ -378,21 +312,17 @@ def create_video(images, script, audio_file, presenter_image=None):
                     else:
                         new_size = (int(target_size[1] * aspect_ratio), target_size[1])
                     
-                    # Resize image
                     img = img.resize(new_size, Image.Resampling.LANCZOS)
                     
-                    # Create transparent background instead of black
-                    background = Image.new('RGBA', target_size, (0, 0, 0, 0))
+                    # Create white background
+                    background = Image.new('RGBA', target_size, (255, 255, 255, 255))
                     
                     # Paste image in center
                     paste_x = (target_size[0] - new_size[0]) // 2
                     paste_y = (target_size[1] - new_size[1]) // 2
                     background.paste(img, (paste_x, paste_y))
                     
-                    # Save processed frame as PNG for transparency
-                    temp_png_path = f"frames/frame_{idx}.png"
-                    background.save(temp_png_path, format='PNG')
-                    frames.append(temp_png_path)
+                    frames.append(np.array(background))
                     
             except Exception as e:
                 print(f"Error processing image {img_url}: {str(e)}")
@@ -401,64 +331,54 @@ def create_video(images, script, audio_file, presenter_image=None):
         if not frames:
             raise Exception("No valid frames were created")
         
+        # Load and process avatar video
         if presenter_image:
-            presenter_image = process_presenter_image(presenter_image)
-            # Save directly to static directory
-            avatar_path = "static/avatar.mp4"
             avatar_path = create_talking_avatar(audio_file, presenter_image, script)
-            
-            if avatar_path:
-                # Save processed avatar to static directory
-                processed_avatar_path = "static/processed_avatar.mp4"
-                processed_avatar_path = process_avatar_video(avatar_path)
+            if avatar_path and os.path.exists(avatar_path):
+                # Create video clips
+                main_clip = ImageSequenceClip(frames, durations=[3] * len(frames))
+                avatar_clip = VideoFileClip(avatar_path)
                 
-                print(f"Loading processed avatar from: {processed_avatar_path}")
-                # Load the processed avatar video
-                avatar_clip = VideoFileClip(processed_avatar_path)
+                # Resize avatar if needed (adjust size as needed)
+                avatar_width = int(target_size[0] * 0.25)  # 25% of screen width
+                avatar_height = int(avatar_width * avatar_clip.h / avatar_clip.w)
+                avatar_clip = avatar_clip.resize((avatar_width, avatar_height))
                 
-                # Create main video clip
-                main_clip = ImageSequenceClip(frames, durations=[avatar_clip.duration/len(frames)] * len(frames))
+                # Position avatar in bottom right with padding
+                avatar_x = target_size[0] - avatar_width - 50
+                avatar_y = target_size[1] - avatar_height - 50
                 
-                # Position avatar in bottom right corner using pos instead of set_position
-                avatar_x = main_clip.w - avatar_clip.w - 50
-                avatar_y = main_clip.h - avatar_clip.h - 50
-                positioned_avatar = avatar_clip.set_pos((avatar_x, avatar_y))  # Changed to set_pos
-                
-                # Create a black background clip
-                background = ColorClip(size=main_clip.size, color=(0,0,0))
-                background = background.set_duration(main_clip.duration)
-                
-                # Composite clips
+                # Create the final composite
                 final_clip = CompositeVideoClip(
-                    [background, main_clip, positioned_avatar],  # Use positioned_avatar
-                    size=main_clip.size
+                    [
+                        main_clip,
+                        avatar_clip.set_position((avatar_x, avatar_y))
+                    ],
+                    size=target_size
                 )
                 
                 # Write final video
                 output_path = "static/generated_video.mp4"
-                print(f"Writing final video to: {output_path}")
                 final_clip.write_videofile(
                     output_path,
-                    fps=24,
+                    fps=30,
                     codec='libx264',
                     audio_codec='aac',
                     audio_bitrate="192k"
                 )
                 
                 # Clean up
-                avatar_clip.close()
                 main_clip.close()
+                avatar_clip.close()
                 final_clip.close()
-                background.close()
                 
-                print(f"Video creation completed. Output at: {output_path}")
                 return output_path
-        
-        # If no presenter image or avatar creation failed, create regular video
+                
+        # Fallback to basic video if no avatar
         clip = ImageSequenceClip(frames, durations=[3] * len(frames))
         clip.write_videofile(
             "static/generated_video.mp4",
-            fps=24,
+            fps=30,
             codec='libx264',
             audio_codec='aac',
             audio_bitrate="192k"
