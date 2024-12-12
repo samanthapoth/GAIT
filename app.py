@@ -423,7 +423,7 @@ def create_video(images, script, audio_file, presenter_image=None):
                     final_clip = CompositeVideoClip(
                         [
                             main_clip,
-                            masked_avatar.set_position((avatar_x, avatar_y)).set_opacity(0.9)  # Slightly transparent
+                            masked_avatar.set_position((avatar_x, avatar_y))
                         ],
                         size=target_size
                     )
