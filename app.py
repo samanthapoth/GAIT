@@ -129,19 +129,77 @@ def generate_script(product_name, product_description, video_length):
     
     return script.strip(), ""  # Return empty string for visuals
 
+def process_presenter_image(presenter_image):
+    """Process presenter image ensuring correct portrait orientation"""
+    try:
+        with Image.open(presenter_image) as img:
+            # Convert to RGB
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # If image is wider than tall, rotate it 90 degrees counterclockwise
+            if img.size[0] > img.size[1]:
+                img = img.transpose(Image.Transpose.ROTATE_270)
+            
+            # Set target dimensions (portrait)
+            target_width = 540
+            target_height = 960
+            
+            # Calculate resize dimensions maintaining aspect ratio
+            ratio = min(target_width / img.size[0], target_height / img.size[1])
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            
+            # Resize image
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Create new image with white background
+            background = Image.new('RGB', (target_width, target_height), (255, 255, 255))
+            
+            # Paste resized image in center
+            offset = ((target_width - new_size[0]) // 2,
+                     (target_height - new_size[1]) // 2)
+            background.paste(img, offset)
+            
+            # Save processed image
+            processed_path = "frames/processed_presenter.jpg"
+            
+            # Try different quality settings until file size is under 8MB
+            for quality in [95, 85, 75, 65, 55, 45]:
+                background.save(processed_path, 
+                              'JPEG', 
+                              quality=quality, 
+                              optimize=True)
+                
+                file_size = os.path.getsize(processed_path) / (1024 * 1024)
+                print(f"Processed image size at quality {quality}: {file_size:.2f}MB")
+                
+                if file_size < 8:
+                    break
+            
+            print(f"Final image size: {os.path.getsize(processed_path) / (1024 * 1024):.2f}MB")
+            return processed_path
+            
+    except Exception as e:
+        print(f"Error processing presenter image: {str(e)}")
+        return None
+
 def create_talking_avatar(audio_file, presenter_image, script):
     """Create a talking avatar video using D-ID API"""
     try:
         print(f"Starting avatar creation with image: {presenter_image}")
         
-        # Get the original MIME type of the uploaded file
-        with open(presenter_image, 'rb') as img_file:
-            # Upload the original file directly with its original format
+        # Process the image first
+        processed_image = process_presenter_image(presenter_image)
+        if not processed_image:
+            raise Exception("Failed to process presenter image")
+        
+        # Get the original MIME type of the processed file
+        with open(processed_image, 'rb') as img_file:
             files = {
                 'image': (
-                    os.path.basename(presenter_image),  # Keep original filename
+                    'presenter.jpg',  # Use consistent filename
                     img_file,
-                    'image/jpeg' if presenter_image.endswith('.jpg') or presenter_image.endswith('.jpeg') else 'image/png'
+                    'image/jpeg'  # Always JPEG after processing
                 )
             }
             
@@ -149,7 +207,6 @@ def create_talking_avatar(audio_file, presenter_image, script):
                 "Authorization": f"Basic {DID_API_KEY}"
             }
             
-            # Send the original file without any processing
             upload_response = requests.post(
                 f"{DID_API_URL}/images",
                 headers=upload_headers,
@@ -246,54 +303,6 @@ def create_talking_avatar(audio_file, presenter_image, script):
         print(f"Error creating avatar: {str(e)}")
         print(f"Full error details: {type(e).__name__}: {str(e)}")
         return None
-
-def process_presenter_image(presenter_image):
-    """Process presenter image to remove background and compress"""
-    try:
-        with Image.open(presenter_image) as img:
-            # Convert to RGBA for transparency
-            if img.mode != 'RGBA':
-                img = img.convert('RGBA')
-            
-            # Remove background
-            print("Removing background from presenter image...")
-            img_no_bg = remove(img)
-            
-            # Calculate new dimensions while maintaining aspect ratio
-            max_size = (800, 800)  # Maximum dimensions
-            ratio = min(max_size[0] / img_no_bg.size[0], max_size[1] / img_no_bg.size[1])
-            new_size = (int(img_no_bg.size[0] * ratio), int(img_no_bg.size[1] * ratio))
-            
-            # Resize image
-            img_no_bg = img_no_bg.resize(new_size, Image.Resampling.LANCZOS)
-            
-            # Save processed image as compressed JPEG
-            processed_path = "frames/processed_presenter.jpg"
-            
-            # Convert to RGB (removing alpha channel) and save with compression
-            rgb_img = Image.new('RGB', img_no_bg.size, (255, 255, 255))
-            rgb_img.paste(img_no_bg, mask=img_no_bg.split()[3])  # Use alpha channel as mask
-            
-            # Save with high compression (lower quality)
-            rgb_img.save(processed_path, 'JPEG', quality=85, optimize=True)
-            
-            # Verify file size
-            file_size = os.path.getsize(processed_path) / (1024 * 1024)  # Size in MB
-            print(f"Processed image size: {file_size:.2f}MB")
-            
-            if file_size > 9:  # If still too large, compress more
-                for quality in [70, 60, 50, 40]:
-                    rgb_img.save(processed_path, 'JPEG', quality=quality, optimize=True)
-                    file_size = os.path.getsize(processed_path) / (1024 * 1024)
-                    print(f"Recompressed image size at quality {quality}: {file_size:.2f}MB")
-                    if file_size < 9:
-                        break
-            
-            return processed_path
-            
-    except Exception as e:
-        print(f"Error processing presenter image: {str(e)}")
-        return presenter_image  # Return original if processing fails
 
 def process_avatar_video(avatar_path):
     """Simplified function that just returns the original video path"""
