@@ -16,6 +16,7 @@ from rembg import remove
 from moviepy.video.VideoClip import ColorClip
 import re
 from moviepy.video.fx.resize import resize
+import traceback
 
 app = Flask(__name__)
 load_dotenv(override=True)
@@ -130,45 +131,53 @@ def generate_script(product_name, product_description, video_length):
     return script.strip(), ""  # Return empty string for visuals
 
 def process_presenter_image(presenter_image):
-    """Process presenter image ensuring correct portrait orientation"""
+    """Process presenter image ensuring correct portrait orientation and transparent background"""
     try:
         with Image.open(presenter_image) as img:
-            # Convert to RGB
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+            # Convert to RGBA for transparency
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            
+            # Remove background
+            print("Removing background from presenter image...")
+            img_no_bg = remove(img)
             
             # If image is wider than tall, rotate it 90 degrees counterclockwise
-            if img.size[0] > img.size[1]:
-                img = img.transpose(Image.Transpose.ROTATE_270)
+            if img_no_bg.size[0] > img_no_bg.size[1]:
+                img_no_bg = img_no_bg.transpose(Image.Transpose.ROTATE_270)
             
             # Set target dimensions (portrait)
             target_width = 540
             target_height = 960
             
             # Calculate resize dimensions maintaining aspect ratio
-            ratio = min(target_width / img.size[0], target_height / img.size[1])
-            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            ratio = min(target_width / img_no_bg.size[0], target_height / img_no_bg.size[1])
+            new_size = (int(img_no_bg.size[0] * ratio), int(img_no_bg.size[1] * ratio))
             
             # Resize image
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            img_no_bg = img_no_bg.resize(new_size, Image.Resampling.LANCZOS)
             
-            # Create new image with white background
-            background = Image.new('RGB', (target_width, target_height), (255, 255, 255))
+            # Create new image with transparent background
+            background = Image.new('RGBA', (target_width, target_height), (0, 0, 0, 0))
             
             # Paste resized image in center
             offset = ((target_width - new_size[0]) // 2,
                      (target_height - new_size[1]) // 2)
-            background.paste(img, offset)
+            background.paste(img_no_bg, offset, img_no_bg)  # Use alpha channel as mask
+            
+            # Convert to RGB for D-ID (they expect JPEG)
+            rgb_img = Image.new('RGB', background.size, (255, 255, 255))
+            rgb_img.paste(background, mask=background.split()[3])  # Use alpha channel as mask
             
             # Save processed image
             processed_path = "frames/processed_presenter.jpg"
             
             # Try different quality settings until file size is under 8MB
             for quality in [95, 85, 75, 65, 55, 45]:
-                background.save(processed_path, 
-                              'JPEG', 
-                              quality=quality, 
-                              optimize=True)
+                rgb_img.save(processed_path, 
+                           'JPEG', 
+                           quality=quality, 
+                           optimize=True)
                 
                 file_size = os.path.getsize(processed_path) / (1024 * 1024)
                 print(f"Processed image size at quality {quality}: {file_size:.2f}MB")
@@ -223,7 +232,7 @@ def create_talking_avatar(audio_file, presenter_image, script):
         image_url = upload_response.json()['url']
         print(f"Got image URL: {image_url}")
         
-        # Create the talk
+        # Create the talk with explicit background removal and transparency
         print("Creating talk with payload...")
         payload = {
             "script": {
@@ -239,6 +248,7 @@ def create_talking_avatar(audio_file, presenter_image, script):
                 "pad_audio": 0,
                 "result_format": "mp4",
                 "remove_background": True,
+                "transparent_background": True,
                 "stitch": True
             },
             "source_url": image_url
@@ -294,7 +304,6 @@ def create_talking_avatar(audio_file, presenter_image, script):
                 
             elif status == 'error':
                 error_message = status_response.json().get('error', 'Unknown error')
-                print(f"Error in video generation: {error_message}")
                 raise Exception(f"Failed to generate avatar video: {error_message}")
                 
             time.sleep(2)  # Wait before checking again
@@ -344,7 +353,7 @@ def create_video(images, script, audio_file, presenter_image=None):
                     img = img.resize(new_size, Image.Resampling.LANCZOS)
                     
                     # Create white background
-                    background = Image.new('RGBA', target_size, (255, 255, 255, 255))
+                    background = Image.new('RGB', target_size, (255, 255, 255))
                     
                     # Paste image in center
                     paste_x = (target_size[0] - new_size[0]) // 2
@@ -364,61 +373,110 @@ def create_video(images, script, audio_file, presenter_image=None):
         if presenter_image:
             avatar_path = create_talking_avatar(audio_file, presenter_image, script)
             if avatar_path and os.path.exists(avatar_path):
-                # Create video clips
-                main_clip = ImageSequenceClip(frames, durations=[3] * len(frames))
-                avatar_clip = VideoFileClip(avatar_path)
-                
-                # Resize avatar using the resize function directly
-                avatar_width = int(target_size[0] * 0.25)  # 25% of screen width
-                avatar_clip = resize(avatar_clip, width=avatar_width)
-                
-                # Calculate new height maintaining aspect ratio
-                avatar_height = avatar_clip.h
-                
-                # Position avatar in bottom right with padding
-                avatar_x = target_size[0] - avatar_width - 50
-                avatar_y = target_size[1] - avatar_height - 50
-                
-                # Create the final composite
-                final_clip = CompositeVideoClip(
-                    [
-                        main_clip,
-                        avatar_clip.set_position((avatar_x, avatar_y))
-                    ],
-                    size=target_size
-                )
-                
-                # Write final video
-                output_path = "static/generated_video.mp4"
-                final_clip.write_videofile(
-                    output_path,
-                    fps=30,
-                    codec='libx264',
-                    audio_codec='aac',
-                    audio_bitrate="192k"
-                )
-                
-                # Clean up
-                main_clip.close()
-                avatar_clip.close()
-                final_clip.close()
-                
-                return output_path
-                
-        # Fallback to basic video if no avatar
+                try:
+                    print("Creating video clips...")
+                    main_clip = ImageSequenceClip(frames, durations=[3] * len(frames))
+                    
+                    print("Loading avatar clip...")
+                    avatar_clip = VideoFileClip(avatar_path)
+                    
+                    print("Creating mask for avatar...")
+                    def create_mask(frame):
+                        # Convert to RGB if needed
+                        if len(frame.shape) == 4:
+                            frame = frame[:,:,:3]
+                        
+                        # More aggressive masking - detect any light pixels
+                        is_light = np.mean(frame, axis=2) > 200
+                        # Also detect near-white pixels
+                        is_white = np.all(frame > [230, 230, 230], axis=2)
+                        # Combine masks (True for pixels we want to remove)
+                        remove_mask = is_light | is_white
+                        # Invert mask (True for pixels we want to keep)
+                        keep_mask = ~remove_mask
+                        return keep_mask.astype('float32')
+                    
+                    # Apply mask to each frame
+                    avatar_frames = []
+                    for frame in avatar_clip.iter_frames():
+                        mask = create_mask(frame)
+                        # Create an RGBA frame
+                        rgba_frame = np.zeros((frame.shape[0], frame.shape[1], 4))
+                        # Copy RGB channels
+                        rgba_frame[:,:,:3] = frame[:,:,:3]
+                        # Set alpha channel from mask
+                        rgba_frame[:,:,3] = mask * 255
+                        avatar_frames.append(rgba_frame)
+                    
+                    print("Creating masked avatar clip...")
+                    masked_avatar = ImageSequenceClip(avatar_frames, fps=avatar_clip.fps)
+                    
+                    print("Resizing avatar...")
+                    avatar_width = int(target_size[0] * 0.25)  # 25% of screen width
+                    masked_avatar = resize(masked_avatar, width=avatar_width)
+                    
+                    # Position avatar in bottom right with padding
+                    avatar_x = target_size[0] - avatar_width - 50
+                    avatar_y = target_size[1] - masked_avatar.h - 50
+                    
+                    print("Creating composite clip...")
+                    final_clip = CompositeVideoClip(
+                        [
+                            main_clip,
+                            masked_avatar.set_position((avatar_x, avatar_y)).set_opacity(0.9)  # Slightly transparent
+                        ],
+                        size=target_size
+                    )
+                    
+                    print("Writing final video...")
+                    output_path = "static/generated_video.mp4"
+                    final_clip.write_videofile(
+                        output_path,
+                        fps=30,
+                        codec='libx264',
+                        audio_codec='aac',
+                        audio_bitrate="192k",
+                        bitrate="8000k",
+                        preset='ultrafast'  # For faster encoding
+                    )
+                    
+                    print("Cleaning up clips...")
+                    main_clip.close()
+                    avatar_clip.close()
+                    masked_avatar.close()
+                    final_clip.close()
+                    
+                    return output_path
+                    
+                except Exception as e:
+                    print(f"Error in video composition: {str(e)}")
+                    print(f"Full error details: {type(e).__name__}: {str(e)}")
+                    traceback.print_exc()
+                    return create_basic_video(frames)
+        
+        return create_basic_video(frames)
+        
+    except Exception as e:
+        print(f"Error creating video: {str(e)}")
+        print(f"Full error details: {type(e).__name__}: {str(e)}")
+        raise e
+
+def create_basic_video(frames):
+    """Fallback function to create basic video without avatar"""
+    try:
         clip = ImageSequenceClip(frames, durations=[3] * len(frames))
+        output_path = "static/generated_video.mp4"
         clip.write_videofile(
-            "static/generated_video.mp4",
+            output_path,
             fps=30,
             codec='libx264',
             audio_codec='aac',
             audio_bitrate="192k"
         )
-        
-        return "static/generated_video.mp4"
-        
+        clip.close()
+        return output_path
     except Exception as e:
-        print(f"Error creating video: {str(e)}")
+        print(f"Error creating basic video: {str(e)}")
         raise e
 
 def generate_voiceover(script):
