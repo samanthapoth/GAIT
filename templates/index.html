@@ -3,18 +3,131 @@
 <head>
     <title>GAIT - Content Generation System</title>
     <style>
-        .error { color: red; }
-        .form-group { margin: 20px 0; }
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #ff6b00;
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .error { 
+            color: #ff4444;
+            background: rgba(255, 68, 68, 0.1);
+            padding: 10px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        .form-group { 
+            margin: 25px 0;
+        }
+
+        input[type="text"], input[type="number"], select, input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            margin-top: 8px;
+            background: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #fff;
+        }
+
+        input[type="file"] {
+            background: transparent;
+            border: none;
+        }
+
+        select {
+            cursor: pointer;
+        }
+
+        button {
+            background: #ff6b00;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+            width: 100%;
+        }
+
+        button:hover {
+            background: #ff8533;
+        }
+
+        small {
+            color: #888;
+            display: block;
+            margin-top: 5px;
+        }
+
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(26, 26, 26, 0.95);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .loading-content {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #2d2d2d;
+            border-top: 5px solid #ff6b00;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #loading-tip {
+            color: #ff6b00;
+            margin-top: 20px;
+            font-size: 18px;
+            max-width: 600px;
+        }
     </style>
 </head>
 <body>
+    <div id="loading-overlay">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <h2>Generating Your Video</h2>
+            <div id="loading-tip"></div>
+        </div>
+    </div>
+
     <h1>GAIT Content Generator</h1>
     
     {% if error %}
         <div class="error">{{ error }}</div>
     {% endif %}
     
-    <form method="POST" enctype="multipart/form-data">
+    <form method="POST" enctype="multipart/form-data" id="videoForm">
         <div class="form-group">
             <label>Amazon Product Link:</label><br>
             <input type="text" name="amazon_link" size="100" required>
@@ -35,11 +148,57 @@
         
         <div class="form-group">
             <label for="presenter_image">Add Presenter Image (Optional):</label>
-            <input type="file" name="presenter_image" accept="image/*">
-            <small>Upload a clear front-facing photo to create an AI presenter</small>
+            <input type="file" name="presenter_image" accept="image/*" onchange="validateImage(this)">
+            <small>Upload a clear front-facing photo in portrait (vertical) orientation</small>
         </div>
         
         <button type="submit">Generate Video</button>
     </form>
+
+    <script>
+        const loadingTips = [
+            "Creating engaging video content...",
+            "Optimizing your marketing message...",
+            "Generating professional visuals...",
+            "Crafting compelling narratives...",
+            "Processing your content...",
+            "Enhancing visual appeal...",
+            "Preparing your marketing assets...",
+            "Finalizing video production..."
+        ];
+        
+        let currentTipIndex = 0;
+
+        function showLoadingOverlay() {
+            document.getElementById('loading-overlay').style.display = 'flex';
+            rotateTips();
+        }
+
+        function rotateTips() {
+            const tipElement = document.getElementById('loading-tip');
+            tipElement.textContent = loadingTips[currentTipIndex];
+            currentTipIndex = (currentTipIndex + 1) % loadingTips.length;
+            setTimeout(rotateTips, 5000);  // Change tip every 5 seconds
+        }
+
+        document.getElementById('videoForm').addEventListener('submit', function(e) {
+            showLoadingOverlay();
+        });
+
+        // Add this function to check image orientation
+        function validateImage(input) {
+            const file = input.files[0];
+            const img = new Image();
+            
+            img.onload = function() {
+                if (this.width > this.height) {
+                    alert('Please upload a portrait (vertical) orientation photo. Your photo appears to be in landscape orientation.');
+                    input.value = ''; // Clear the input
+                }
+            }
+            
+            img.src = URL.createObjectURL(file);
+        }
+    </script>
 </body>
 </html>

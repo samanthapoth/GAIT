@@ -15,6 +15,7 @@ import io
 from rembg import remove
 from moviepy.video.VideoClip import ColorClip
 import re
+from moviepy.video.fx.resize import resize
 
 app = Flask(__name__)
 load_dotenv(override=True)
@@ -132,31 +133,23 @@ def create_talking_avatar(audio_file, presenter_image, script):
     """Create a talking avatar video using D-ID API"""
     try:
         print(f"Starting avatar creation with image: {presenter_image}")
-        print(f"Audio file: {audio_file}")
-        print(f"Using D-ID API URL: {DID_API_URL}")
         
-        # Resize and compress image before upload
-        print("Processing image...")
-        with Image.open(presenter_image) as img:
-            # Convert to RGB if necessary
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+        # Get the original MIME type of the uploaded file
+        with open(presenter_image, 'rb') as img_file:
+            # Upload the original file directly with its original format
+            files = {
+                'image': (
+                    os.path.basename(presenter_image),  # Keep original filename
+                    img_file,
+                    'image/jpeg' if presenter_image.endswith('.jpg') or presenter_image.endswith('.jpeg') else 'image/png'
+                )
+            }
             
-            # Calculate new size while maintaining aspect ratio
-            max_size = (800, 800)  # Reasonable size for avatar
-            img.thumbnail(max_size, Image.Resampling.LANCZOS)
-            
-            # Save compressed image to bytes
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='JPEG', quality=85, optimize=True)
-            img_byte_arr.seek(0)
-            
-            # Upload the processed image
-            print("Attempting to upload presenter image...")
-            files = {'image': ('presenter.jpg', img_byte_arr, 'image/jpeg')}
             upload_headers = {
                 "Authorization": f"Basic {DID_API_KEY}"
             }
+            
+            # Send the original file without any processing
             upload_response = requests.post(
                 f"{DID_API_URL}/images",
                 headers=upload_headers,
@@ -255,7 +248,7 @@ def create_talking_avatar(audio_file, presenter_image, script):
         return None
 
 def process_presenter_image(presenter_image):
-    """Process presenter image to remove background"""
+    """Process presenter image to remove background and compress"""
     try:
         with Image.open(presenter_image) as img:
             # Convert to RGBA for transparency
@@ -266,9 +259,36 @@ def process_presenter_image(presenter_image):
             print("Removing background from presenter image...")
             img_no_bg = remove(img)
             
-            # Save processed image as PNG for transparency
-            processed_path = "frames/processed_presenter.png"
-            img_no_bg.save(processed_path, quality=95)
+            # Calculate new dimensions while maintaining aspect ratio
+            max_size = (800, 800)  # Maximum dimensions
+            ratio = min(max_size[0] / img_no_bg.size[0], max_size[1] / img_no_bg.size[1])
+            new_size = (int(img_no_bg.size[0] * ratio), int(img_no_bg.size[1] * ratio))
+            
+            # Resize image
+            img_no_bg = img_no_bg.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Save processed image as compressed JPEG
+            processed_path = "frames/processed_presenter.jpg"
+            
+            # Convert to RGB (removing alpha channel) and save with compression
+            rgb_img = Image.new('RGB', img_no_bg.size, (255, 255, 255))
+            rgb_img.paste(img_no_bg, mask=img_no_bg.split()[3])  # Use alpha channel as mask
+            
+            # Save with high compression (lower quality)
+            rgb_img.save(processed_path, 'JPEG', quality=85, optimize=True)
+            
+            # Verify file size
+            file_size = os.path.getsize(processed_path) / (1024 * 1024)  # Size in MB
+            print(f"Processed image size: {file_size:.2f}MB")
+            
+            if file_size > 9:  # If still too large, compress more
+                for quality in [70, 60, 50, 40]:
+                    rgb_img.save(processed_path, 'JPEG', quality=quality, optimize=True)
+                    file_size = os.path.getsize(processed_path) / (1024 * 1024)
+                    print(f"Recompressed image size at quality {quality}: {file_size:.2f}MB")
+                    if file_size < 9:
+                        break
+            
             return processed_path
             
     except Exception as e:
@@ -339,10 +359,12 @@ def create_video(images, script, audio_file, presenter_image=None):
                 main_clip = ImageSequenceClip(frames, durations=[3] * len(frames))
                 avatar_clip = VideoFileClip(avatar_path)
                 
-                # Resize avatar if needed (adjust size as needed)
+                # Resize avatar using the resize function directly
                 avatar_width = int(target_size[0] * 0.25)  # 25% of screen width
-                avatar_height = int(avatar_width * avatar_clip.h / avatar_clip.w)
-                avatar_clip = avatar_clip.resize((avatar_width, avatar_height))
+                avatar_clip = resize(avatar_clip, width=avatar_width)
+                
+                # Calculate new height maintaining aspect ratio
+                avatar_height = avatar_clip.h
                 
                 # Position avatar in bottom right with padding
                 avatar_x = target_size[0] - avatar_width - 50
@@ -453,10 +475,27 @@ def get_product_info(amazon_link):
         # Fallback to default values if scraping fails
         return "Unknown Product", "No description available"
 
+def generate_loading_tips():
+    """Generate content creation tips using OpenAI"""
+    prompt = """Generate 10 unique, helpful tips about content creation and video marketing. 
+    Format each tip as a single line of text. Make them concise and actionable.
+    Focus on social media, video creation, and marketing best practices."""
+    
+    response = openai_client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    tips = response.choices[0].message.content.strip().split('\n')
+    return [tip.strip() for tip in tips if tip.strip()]
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         try:
+            # Generate loading tips first
+            loading_tips = generate_loading_tips()
+            
             # Get form data
             amazon_link = request.form.get('amazon_link')
             video_length = request.form.get('video_length', '30')
@@ -495,7 +534,8 @@ def index():
                                 main_video='generated_video.mp4',  # Remove 'static/' prefix
                                 script=script,
                                 visuals=visuals,
-                                images=images)
+                                images=images,
+                                loading_tips=loading_tips)
             
         except Exception as e:
             return render_template('index.html', error=str(e))

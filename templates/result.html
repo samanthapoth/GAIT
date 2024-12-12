@@ -3,19 +3,122 @@
 <head>
     <title>Generated Content</title>
     <style>
-        .error {
-            color: red;
-            margin: 10px 0;
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
         }
+
+        h1, h2, h3 {
+            color: #ff6b00;
+            margin: 30px 0 20px 0;
+        }
+
+        .error {
+            color: #ff4444;
+            background: rgba(255, 68, 68, 0.1);
+            padding: 10px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
         .image-container {
             margin: 20px 0;
         }
+
         .video-container {
             margin: 20px 0;
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        pre {
+            background: #2d2d2d;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+
+        img {
+            border-radius: 8px;
+            max-width: 100%;
+            height: auto;
+        }
+
+        a {
+            display: inline-block;
+            background: #ff6b00;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            margin: 20px 0;
+            transition: background 0.3s;
+        }
+
+        a:hover {
+            background: #ff8533;
+        }
+
+        .gcse-search {
+            margin-top: 30px;
+        }
+
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(26, 26, 26, 0.95);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .loading-content {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #2d2d2d;
+            border-top: 5px solid #ff6b00;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #loading-tip {
+            color: #ff6b00;
+            margin-top: 20px;
+            font-size: 18px;
+            max-width: 600px;
         }
     </style>
 </head>
 <body>
+    <div id="loading-overlay" style="display: none;">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <h2>Generating Your Video</h2>
+            <div id="loading-tip"></div>
+        </div>
+    </div>
+
     <h1>{{ product_name }}</h1>
     
     {% if error %}
@@ -58,5 +161,35 @@
     <script async src="https://cse.google.com/cse.js?cx=52035b634ebc94711">
     </script>
     <div class="gcse-search"></div>
+
+    <script>
+        // Store the tips from Flask
+        const loadingTips = JSON.parse('{{ loading_tips|tojson|safe }}');
+        let currentTipIndex = 0;
+
+        function showLoadingOverlay() {
+            document.getElementById('loading-overlay').style.display = 'flex';
+            rotateTips();
+        }
+
+        function hideLoadingOverlay() {
+            document.getElementById('loading-overlay').style.display = 'none';
+        }
+
+        function rotateTips() {
+            const tipElement = document.getElementById('loading-tip');
+            tipElement.textContent = loadingTips[currentTipIndex];
+            currentTipIndex = (currentTipIndex + 1) % loadingTips.length;
+            setTimeout(rotateTips, 5000);  // Change tip every 5 seconds
+        }
+
+        // Show loading overlay when page loads if video is not ready
+        if (!document.querySelector('video')) {
+            showLoadingOverlay();
+        }
+
+        // Hide loading overlay when video is loaded
+        document.querySelector('video')?.addEventListener('loadeddata', hideLoadingOverlay);
+    </script>
 </body>
 </html>
