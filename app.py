@@ -17,6 +17,10 @@ from moviepy.video.VideoClip import ColorClip
 import re
 from moviepy.video.fx.resize import resize
 import traceback
+from anthropic import Anthropic
+import cv2
+import gc
+import base64
 
 app = Flask(__name__)
 load_dotenv(override=True)
@@ -29,6 +33,9 @@ GOOGLE_CSE_ID = os.getenv('GOOGLE_CSE_ID')
 # Add D-ID API credentials
 DID_API_URL = os.getenv('DID_API_URL')
 DID_API_KEY = os.getenv('DID_API_KEY')
+
+# Initialize Anthropic client at the top with other API clients
+anthropic = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
 def fetch_images_from_google(query):
     """Fetch images using Google Custom Search API"""
@@ -98,118 +105,243 @@ def fetch_images_from_google(query):
     return images[:10]  # Return up to 10 unique images
 
 def generate_script(product_name, product_description, video_length):
-    """Generate video script using OpenAI"""
+    """Generate video script using OpenAI with strict word count based on time"""
+    # Calculate target word count (average speaking rate is ~150 words per minute)
+    target_words = int((int(video_length) / 60) * 150)
+    
     prompt = f"""Write a {video_length} second promotional video script for this product:
     Product: {product_name}
     Description: {product_description}
     
-    Important: Write ONLY the speaking parts. No labels, no 'SCRIPT:', no 'VISUALS:', no speaker names, no parentheses, no stage directions - just the exact words to be spoken.
+    CRITICAL: The script MUST be exactly {target_words} words to fit in {video_length} seconds.
+    
+    Write ONLY the speaking parts. No labels, no directions - just the exact words to be spoken.
     Make it engaging and natural, like someone talking to a friend.
     Include an opening hook, key features, and end with a call to action."""
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        script = response.choices[0].message.content.strip()
+        
+        # Clean up formatting
+        script = script.replace('SCRIPT:', '').replace('VISUALS:', '')
+        script = script.replace('Speaker:', '').replace('Narrator:', '')
+        script = re.sub(r'\([^)]*\)', '', script)
+        script = re.sub(r'\[[^\]]*\]', '', script)
+        script = '\n'.join(line for line in script.split('\n') 
+                          if not line.strip().startswith(('(', '[', '*', '-')))
+        
+        return script.strip(), ""
+        
+    except Exception as e:
+        print(f"Error generating script: {str(e)}")
+        raise e
+
+def get_presenter_prompt(product_name=None, product_description=None):
+    """Generate a prompt for DALL-E that will create a context-appropriate presenter image"""
     
-    response = openai_client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # Analyze product context for gender appropriateness
+    feminine_keywords = ['women', 'woman', 'feminine', 'girl', 'female', 'makeup', 'beauty', 'skincare', 
+                        'cosmetic', 'purse', 'handbag', 'dress', 'pregnancy', 'maternity']
+    masculine_keywords = ['men', 'man', 'masculine', 'guy', 'male', 'beard', 'shaving', 'suit', 
+                        'tie', 'aftershave', 'cologne']
     
-    script = response.choices[0].message.content.strip()
+    # Convert to lower case for matching
+    product_text = (product_name + " " + product_description).lower()
     
-    # Clean up any remaining formatting
-    script = script.replace('SCRIPT:', '').replace('VISUALS:', '')
-    script = script.replace('Speaker:', '').replace('Narrator:', '')
+    # Determine presenter gender based on product context
+    is_feminine = any(keyword in product_text for keyword in feminine_keywords)
+    is_masculine = any(keyword in product_text for keyword in masculine_keywords)
     
-    # Remove any text within parentheses
-    script = re.sub(r'\([^)]*\)', '', script)
+    # Default to professional woman if no clear gender context
+    if is_masculine and not is_feminine:
+        presenter_type = "Professional male presenter"
+    else:
+        presenter_type = "Professional female presenter"
     
-    # Remove any text within brackets
-    script = re.sub(r'\[[^\]]*\]', '', script)
+    base_prompt = f"""{presenter_type}, direct front view portrait, shoulders up, 
+    looking directly at camera, natural smile, casual attire, studio lighting, 
+    solid black background, 8K quality, photorealistic.
+
+    CRITICAL REQUIREMENTS:
+    - Only one person in the image
+    - Direct front-facing pose only
+    - Eyes looking straight at camera
+    - Head centered in frame, make sure it is not cut out of frame. Head and shoulds fully in frame. 
+    - Casual attire
+    - Shoulders and head only
+    - Solid black background
+    - Well-lit face with studio lighting
+    - Sharp, clear facial features
+    - Professional corporate headshot style
+    - No artistic effects
+    - No side angles
+    - No dramatic lighting
+    - No creative poses
+    - No props or products in the image, only the presenter
+    """
+
+    if product_name and product_description:
+        # Add product context while maintaining core requirements
+        base_prompt += f"\nPresenter should appear knowledgeable about {product_name}, maintaining professional corporate style."
+        
+        # Add specific styling notes based on product context
+        if is_masculine:
+            base_prompt += "\nWell-groomed male presenter in casual attire, clean-shaven or neat beard."
+        elif is_feminine:
+            base_prompt += "\nWell-groomed female presenter in casual attire, natural makeup."
     
-    # Remove any lines that look like stage directions
-    script = '\n'.join(line for line in script.split('\n') 
-                      if not line.strip().startswith(('(', '[', '*', '-')))
-    
-    return script.strip(), ""  # Return empty string for visuals
+    return base_prompt
 
 def process_presenter_image(presenter_image):
-    """Process presenter image ensuring correct portrait orientation and transparent background"""
+    """Process presenter image with fully transparent background"""
     try:
         with Image.open(presenter_image) as img:
-            # Convert to RGBA for transparency
             if img.mode != 'RGBA':
                 img = img.convert('RGBA')
             
-            # Remove background
-            print("Removing background from presenter image...")
-            img_no_bg = remove(img)
+            # Super aggressive background removal
+            img_no_bg = remove(
+                img,
+                alpha_matting=True,
+                alpha_matting_foreground_threshold=250,
+                alpha_matting_background_threshold=5,
+                alpha_matting_erode_size=20
+            )
             
-            # If image is wider than tall, rotate it 90 degrees counterclockwise
-            if img_no_bg.size[0] > img_no_bg.size[1]:
-                img_no_bg = img_no_bg.transpose(Image.Transpose.ROTATE_270)
+            # Convert to numpy array for processing
+            img_array = np.array(img_no_bg)
             
-            # Set target dimensions (portrait)
-            target_width = 540
-            target_height = 960
+            # Create binary mask for alpha channel
+            # Anything not completely opaque becomes completely transparent
+            alpha = img_array[:, :, 3]
+            alpha = np.where(alpha > 240, 255, 0)  # Very strict threshold
+            img_array[:, :, 3] = alpha
             
-            # Calculate resize dimensions maintaining aspect ratio
-            ratio = min(target_width / img_no_bg.size[0], target_height / img_no_bg.size[1])
-            new_size = (int(img_no_bg.size[0] * ratio), int(img_no_bg.size[1] * ratio))
+            # Zero out RGB values where alpha is 0
+            img_array[alpha == 0] = [0, 0, 0, 0]
             
-            # Resize image
-            img_no_bg = img_no_bg.resize(new_size, Image.Resampling.LANCZOS)
+            # Convert back to PIL Image
+            output = Image.fromarray(img_array, 'RGBA')
             
-            # Create new image with transparent background
-            background = Image.new('RGBA', (target_width, target_height), (0, 0, 0, 0))
+            # Save as PNG with maximum compression
+            processed_path = "frames/processed_presenter.png"
+            output.save(processed_path, 'PNG', optimize=True)
             
-            # Paste resized image in center
-            offset = ((target_width - new_size[0]) // 2,
-                     (target_height - new_size[1]) // 2)
-            background.paste(img_no_bg, offset, img_no_bg)  # Use alpha channel as mask
-            
-            # Convert to RGB for D-ID (they expect JPEG)
-            rgb_img = Image.new('RGB', background.size, (255, 255, 255))
-            rgb_img.paste(background, mask=background.split()[3])  # Use alpha channel as mask
-            
-            # Save processed image
-            processed_path = "frames/processed_presenter.jpg"
-            
-            # Try different quality settings until file size is under 8MB
-            for quality in [95, 85, 75, 65, 55, 45]:
-                rgb_img.save(processed_path, 
-                           'JPEG', 
-                           quality=quality, 
-                           optimize=True)
-                
-                file_size = os.path.getsize(processed_path) / (1024 * 1024)
-                print(f"Processed image size at quality {quality}: {file_size:.2f}MB")
-                
-                if file_size < 8:
-                    break
-            
-            print(f"Final image size: {os.path.getsize(processed_path) / (1024 * 1024):.2f}MB")
             return processed_path
             
     except Exception as e:
         print(f"Error processing presenter image: {str(e)}")
         return None
 
-def create_talking_avatar(audio_file, presenter_image, script):
-    """Create a talking avatar video using D-ID API"""
+def generate_ai_presenter(product_name=None, product_description=None):
+    """Generate a presenter image using DALL-E based on product context"""
     try:
-        print(f"Starting avatar creation with image: {presenter_image}")
+        print("Generating AI presenter image...")
         
-        # Process the image first
+        # Get contextual prompt based on product
+        dalle_prompt = get_presenter_prompt(product_name, product_description) if product_name else "Casual presenter against plain background, high quality professional headshot, facing forward, neutral expression, shoulders up, casual attire, studio lighting, 4K"
+        
+        response = openai_client.images.generate(
+            model="dall-e-3",
+            prompt=dalle_prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1,
+        )
+        
+        # Get the image URL
+        image_url = response.data[0].url
+        
+        # Download the image
+        image_response = requests.get(image_url)
+        if image_response.status_code == 200:
+            # Save the image
+            os.makedirs('frames', exist_ok=True)
+            presenter_path = "frames/ai_presenter.jpg"
+            with open(presenter_path, 'wb') as f:
+                f.write(image_response.content)
+            return presenter_path
+        else:
+            raise Exception("Failed to download generated image")
+            
+    except Exception as e:
+        print(f"Error generating AI presenter: {str(e)}")
+        return None
+
+def create_talking_avatar(presenter_image, script, product_name=None, product_description=None):
+    """Create a talking avatar video using D-ID API with gender-appropriate voice"""
+    try:
+        # First determine if it's an AI-generated or uploaded image
+        is_uploaded = not str(presenter_image).startswith('frames/ai_presenter')
+        print(f"Image path: {presenter_image}")
+        print(f"Is uploaded: {is_uploaded}")
+        
+        # If uploaded, use OpenAI Vision to detect gender
+        if is_uploaded:
+            try:
+                # Convert image to base64 for OpenAI Vision API
+                with open(presenter_image, 'rb') as img_file:
+                    image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+                
+                response = openai_client.chat.completions.create(
+                    model="gpt-4-vision-preview",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Is this a photo of a woman or a man? Reply with only one word: 'woman' or 'man'."},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_base64}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    max_tokens=10
+                )
+                
+                gender = response.choices[0].message.content.strip().lower()
+                print(f"Detected gender from image: {gender}")
+                
+                # Force female voice for woman
+                if gender == "woman":
+                    voice_id = "en-US-AvaMultilingualNeural"
+                    print("Using female voice based on image detection")
+                else:
+                    voice_id = "en-US-BrianNeural"
+                    print("Using male voice based on image detection")
+                    
+            except Exception as e:
+                print(f"Error in gender detection: {str(e)}")
+                print("Falling back to female voice")
+                voice_id = "en-US-AvaMultilingualNeural"  # Default to female voice if detection fails
+        else:
+            # For AI-generated images, use product context
+            feminine_keywords = ['women', 'woman', 'feminine', 'beauty', 'skincare', 'makeup', 'cosmetic']
+            is_feminine = any(keyword in (product_name or '').lower() + (product_description or '').lower() 
+                            for keyword in feminine_keywords)
+            voice_id = "en-US-AvaMultilingualNeural" if is_feminine else "en-US-BrianNeural"
+            print(f"Using {'female' if is_feminine else 'male'} voice based on product context")
+
+        print(f"Final voice selection: {voice_id}")
+        
+        # Process and upload image
         processed_image = process_presenter_image(presenter_image)
         if not processed_image:
             raise Exception("Failed to process presenter image")
-        
-        # Get the original MIME type of the processed file
+            
+        # Upload image to D-ID
+        print("Uploading image to D-ID...")
         with open(processed_image, 'rb') as img_file:
             files = {
-                'image': (
-                    'presenter.jpg',  # Use consistent filename
-                    img_file,
-                    'image/jpeg'  # Always JPEG after processing
-                )
+                'image': ('presenter.jpg', img_file, 'image/jpeg')
             }
             
             upload_headers = {
@@ -222,25 +354,20 @@ def create_talking_avatar(audio_file, presenter_image, script):
                 files=files
             )
         
-        print(f"Image upload response status: {upload_response.status_code}")
-        print(f"Image upload response: {upload_response.text}")
-        
         if upload_response.status_code not in [200, 201]:
             raise Exception(f"Failed to upload image: {upload_response.text}")
             
-        # Get the image URL from the response
         image_url = upload_response.json()['url']
-        print(f"Got image URL: {image_url}")
-        
-        # Create the talk with explicit background removal and transparency
-        print("Creating talk with payload...")
+        print(f"Image uploaded successfully. URL: {image_url}")
+
+        # Create the talk with D-ID's audio
         payload = {
             "script": {
                 "type": "text",
                 "input": script,
                 "provider": {
                     "type": "microsoft",
-                    "voice_id": "en-US-JennyNeural"
+                    "voice_id": voice_id
                 }
             },
             "config": {
@@ -253,9 +380,7 @@ def create_talking_avatar(audio_file, presenter_image, script):
             },
             "source_url": image_url
         }
-        print(f"Payload: {payload}")
-        
-        # Add content-type header for the talk creation
+
         talk_headers = {
             "Authorization": f"Basic {DID_API_KEY}",
             "Content-Type": "application/json",
@@ -267,50 +392,47 @@ def create_talking_avatar(audio_file, presenter_image, script):
             headers=talk_headers,
             json=payload
         )
-        print(f"Talk creation response status: {response.status_code}")
-        print(f"Talk creation response: {response.text}")
         
         if response.status_code != 201:
             raise Exception(f"Failed to create talk: {response.text}")
             
-        # Get the ID of the created talk
         talk_id = response.json()['id']
-        print(f"Got talk ID: {talk_id}")
+        print(f"Talk created with ID: {talk_id}")
         
-        # Wait for the video to be ready
-        print("Waiting for video processing...")
-        while True:
+        # Wait for processing
+        max_retries = 60
+        for i in range(max_retries):
             status_response = requests.get(
                 f"{DID_API_URL}/talks/{talk_id}",
                 headers={"Authorization": f"Basic {DID_API_KEY}"}
             )
-            status = status_response.json()['status']
-            print(f"Current status: {status}")
+            
+            status = status_response.json().get('status')
+            print(f"Processing status ({i+1}/{max_retries}): {status}")
             
             if status == 'done':
                 result_url = status_response.json()['result_url']
-                print(f"Video ready! Result URL: {result_url}")
+                print(f"Success! Downloading from: {result_url}")
                 
-                # Download the video
-                print("Downloading video...")
                 video_response = requests.get(result_url)
                 avatar_path = "frames/avatar.mp4"
                 
                 with open(avatar_path, 'wb') as f:
                     f.write(video_response.content)
-                    
-                print(f"Avatar video saved to: {avatar_path}")
+                
                 return avatar_path
                 
             elif status == 'error':
                 error_message = status_response.json().get('error', 'Unknown error')
-                raise Exception(f"Failed to generate avatar video: {error_message}")
+                raise Exception(f"D-ID processing failed: {error_message}")
                 
-            time.sleep(2)  # Wait before checking again
+            time.sleep(2)
             
+        raise Exception("Timeout waiting for video processing")
+        
     except Exception as e:
-        print(f"Error creating avatar: {str(e)}")
-        print(f"Full error details: {type(e).__name__}: {str(e)}")
+        print(f"Error in create_talking_avatar: {str(e)}")
+        traceback.print_exc()
         return None
 
 def process_avatar_video(avatar_path):
@@ -318,9 +440,9 @@ def process_avatar_video(avatar_path):
     print("Background removal disabled - using original video")
     return avatar_path
 
-def create_video(images, script, audio_file, presenter_image=None):
+def create_video(images, script, presenter_image=None, product_name=None, product_description=None):
     try:
-        print(f"Starting video creation with presenter_image: {presenter_image}")
+        print("=== Starting Video Creation Process ===")
         
         os.makedirs('frames', exist_ok=True)
         os.makedirs('static', exist_ok=True)
@@ -331,6 +453,8 @@ def create_video(images, script, audio_file, presenter_image=None):
         
         for idx, img_url in enumerate(images):
             try:
+                print(f"Processing image {idx + 1}/{len(images)}: {img_url[:50]}...")
+                
                 # Download and process product images
                 img_response = requests.get(img_url, timeout=10)
                 if img_response.status_code == 200:
@@ -363,7 +487,7 @@ def create_video(images, script, audio_file, presenter_image=None):
                     frames.append(np.array(background))
                     
             except Exception as e:
-                print(f"Error processing image {img_url}: {str(e)}")
+                print(f"Error processing image {idx}: {str(e)}")
                 continue
         
         if not frames:
@@ -371,28 +495,28 @@ def create_video(images, script, audio_file, presenter_image=None):
         
         # Load and process avatar video
         if presenter_image:
-            avatar_path = create_talking_avatar(audio_file, presenter_image, script)
+            avatar_path = create_talking_avatar(presenter_image, script, product_name, product_description)
             if avatar_path and os.path.exists(avatar_path):
                 try:
-                    print("Creating video clips...")
-                    main_clip = ImageSequenceClip(frames, durations=[3] * len(frames))
-                    
-                    print("Loading avatar clip...")
+                    print("Loading avatar clip with audio...")
                     avatar_clip = VideoFileClip(avatar_path)
+                    avatar_duration = avatar_clip.duration
+                    
+                    # Calculate duration for each image based on avatar duration
+                    image_duration = avatar_duration / len(frames)
+                    print(f"Setting each image duration to: {image_duration} seconds")
+                    
+                    print("Creating main clip...")
+                    main_clip = ImageSequenceClip(frames, durations=[image_duration] * len(frames))
                     
                     print("Creating mask for avatar...")
                     def create_mask(frame):
-                        # Convert to RGB if needed
                         if len(frame.shape) == 4:
                             frame = frame[:,:,:3]
-                        
-                        # More aggressive masking - detect any light pixels
-                        is_light = np.mean(frame, axis=2) > 200
-                        # Also detect near-white pixels
-                        is_white = np.all(frame > [230, 230, 230], axis=2)
-                        # Combine masks (True for pixels we want to remove)
-                        remove_mask = is_light | is_white
-                        # Invert mask (True for pixels we want to keep)
+                        # Less aggressive thresholds
+                        is_light = np.mean(frame, axis=2) > 245
+                        is_white = np.all(frame > [252, 252, 252], axis=2)
+                        remove_mask = is_light & is_white
                         keep_mask = ~remove_mask
                         return keep_mask.astype('float32')
                     
@@ -400,11 +524,8 @@ def create_video(images, script, audio_file, presenter_image=None):
                     avatar_frames = []
                     for frame in avatar_clip.iter_frames():
                         mask = create_mask(frame)
-                        # Create an RGBA frame
                         rgba_frame = np.zeros((frame.shape[0], frame.shape[1], 4))
-                        # Copy RGB channels
                         rgba_frame[:,:,:3] = frame[:,:,:3]
-                        # Set alpha channel from mask
                         rgba_frame[:,:,3] = mask * 255
                         avatar_frames.append(rgba_frame)
                     
@@ -412,7 +533,7 @@ def create_video(images, script, audio_file, presenter_image=None):
                     masked_avatar = ImageSequenceClip(avatar_frames, fps=avatar_clip.fps)
                     
                     print("Resizing avatar...")
-                    avatar_width = int(target_size[0] * 0.25)  # 25% of screen width
+                    avatar_width = int(target_size[0] * 0.30)  # 20% of screen width
                     masked_avatar = resize(masked_avatar, width=avatar_width)
                     
                     # Position avatar in bottom right with padding
@@ -426,7 +547,7 @@ def create_video(images, script, audio_file, presenter_image=None):
                             masked_avatar.set_position((avatar_x, avatar_y))
                         ],
                         size=target_size
-                    )
+                    ).set_audio(avatar_clip.audio)  # Explicitly set the audio from avatar_clip
                     
                     print("Writing final video...")
                     output_path = "static/generated_video.mp4"
@@ -436,8 +557,7 @@ def create_video(images, script, audio_file, presenter_image=None):
                         codec='libx264',
                         audio_codec='aac',
                         audio_bitrate="192k",
-                        bitrate="8000k",
-                        preset='ultrafast'  # For faster encoding
+                        bitrate="8000k"
                     )
                     
                     print("Cleaning up clips...")
@@ -450,30 +570,44 @@ def create_video(images, script, audio_file, presenter_image=None):
                     
                 except Exception as e:
                     print(f"Error in video composition: {str(e)}")
-                    print(f"Full error details: {type(e).__name__}: {str(e)}")
                     traceback.print_exc()
-                    return create_basic_video(frames)
-        
-        return create_basic_video(frames)
-        
+                    return None
+                    
     except Exception as e:
-        print(f"Error creating video: {str(e)}")
-        print(f"Full error details: {type(e).__name__}: {str(e)}")
-        raise e
+        print(f"Error in create_video: {str(e)}")
+        traceback.print_exc()
+        return None
 
-def create_basic_video(frames):
-    """Fallback function to create basic video without avatar"""
+def create_basic_video(frames, video_or_audio_file):
+    """Fallback function to create basic video with audio"""
     try:
+        # Load the audio from either video or audio file
+        if video_or_audio_file.endswith('.mp4'):
+            audio_clip = VideoFileClip(video_or_audio_file).audio
+        else:
+            audio_clip = AudioFileClip(video_or_audio_file)
+        
+        # Create video clip and set its duration to match audio
         clip = ImageSequenceClip(frames, durations=[3] * len(frames))
+        clip = clip.set_duration(audio_clip.duration)
+        
+        # Set the audio
+        final_clip = clip.set_audio(audio_clip)
+        
         output_path = "static/generated_video.mp4"
-        clip.write_videofile(
+        final_clip.write_videofile(
             output_path,
             fps=30,
             codec='libx264',
             audio_codec='aac',
             audio_bitrate="192k"
         )
+        
+        # Clean up
         clip.close()
+        audio_clip.close()
+        final_clip.close()
+        
         return output_path
     except Exception as e:
         print(f"Error creating basic video: {str(e)}")
@@ -546,7 +680,7 @@ def generate_loading_tips():
     """Generate content creation tips using OpenAI"""
     prompt = """Generate 10 unique, helpful tips about content creation and video marketing. 
     Format each tip as a single line of text. Make them concise and actionable.
-    Focus on social media, video creation, and marketing best practices."""
+    Focus on social media, video creation, and marketing best practice"""
     
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -556,6 +690,7 @@ def generate_loading_tips():
     tips = response.choices[0].message.content.strip().split('\n')
     return [tip.strip() for tip in tips if tip.strip()]
 
+# Modify the index route to include AI presenter generation
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -582,7 +717,7 @@ def index():
             # 4. Generate voiceover using only the script part
             audio_file = generate_voiceover(script)
             
-            # Handle presenter image upload
+            # Handle presenter image upload or generate AI presenter
             presenter_image = None
             if 'presenter_image' in request.files:
                 file = request.files['presenter_image']
@@ -592,19 +727,32 @@ def index():
                     os.makedirs('frames', exist_ok=True)
                     file.save(presenter_path)
                     presenter_image = presenter_path
+                else:
+                    # Generate AI presenter with product context
+                    presenter_image = generate_ai_presenter(product_name, product_description)
+            else:
+                # Generate AI presenter with product context
+                presenter_image = generate_ai_presenter(product_name, product_description)
+            if not presenter_image:
+                raise Exception("Failed to get presenter image")
             
-            # 5. Create video with optional presenter
-            video_file = create_video(images, script, audio_file, presenter_image)
+            # 5. Create video with presenter
+            video_file = create_video(images, script, presenter_image, product_name, product_description)
             
-            # Return the video filename without the 'static/' prefix
-            return render_template('result.html', 
-                                main_video='generated_video.mp4',  # Remove 'static/' prefix
-                                script=script,
-                                visuals=visuals,
-                                images=images,
-                                loading_tips=loading_tips)
-            
+            if video_file and os.path.exists(video_file):
+                print(f"Successfully created video: {video_file}")
+                video_filename = os.path.basename(video_file)
+                return render_template('result.html', 
+                                    main_video=video_filename,  # Just the filename
+                                    script=script,
+                                    images=images,
+                                    loading_tips=[])  # Empty list to avoid undefined error
+            else:
+                raise Exception("Video creation failed")
+                
         except Exception as e:
+            print(f"Error in route: {str(e)}")
+            traceback.print_exc()
             return render_template('index.html', error=str(e))
             
     return render_template('index.html')
